@@ -1,0 +1,86 @@
+name: Deploy on Main
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  TRIVY_VERSION: "0.59.1"
+  OS_VERSION: debian12
+  DEBIAN_NAME: bookworm
+  CI_SERVER: "yes"
+  INTERMEDIATE_REGISTRY_BASE: "ghcr.io/${{ github.repository }}"
+  GOOGLE_DISTROLESS_BASE_IMAGE: "gcr.io/distroless/cc-debian12"
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - PYTHON_VERSION: "3.11.11"
+            PYTHON_MINOR: "3.11"
+          - PYTHON_VERSION: "3.12.9"
+            PYTHON_MINOR: "3.12"
+    env:
+      CI_PIPELINE_ID: ${{ github.run_id }}
+      TEST_IMAGE_BASE: "ghcr.io/${{ github.repository }}/python-distroless-tests"
+      PYTHON_INTERMEDIATE_BUILDER_IMAGE: "ghcr.io/${{ github.repository }}/python-builder:${{ matrix.PYTHON_MINOR }}-debian12"
+      PYTHON_INTERMEDIATE_BUILDER_IMAGE_FULL: "ghcr.io/${{ github.repository }}/python-builder:${{ matrix.PYTHON_VERSION }}-debian12"
+      PYTHON_INTERMEDIATE_DISTROLESS_IMAGE: "ghcr.io/${{ github.repository }}/python-distroless:${{ matrix.PYTHON_MINOR }}-debian12"
+      PYTHON_INTERMEDIATE_DISTROLESS_IMAGE_FULL: "ghcr.io/${{ github.repository }}/python-distroless:${{ matrix.PYTHON_VERSION }}-debian12"
+      PYTHON_FINAL_BUILDER_IMAGE: "ghcr.io/${{ github.repository }}/python-builder:${{ matrix.PYTHON_MINOR }}-debian12"
+      PYTHON_FINAL_BUILDER_IMAGE_FULL: "ghcr.io/${{ github.repository }}/python-builder:${{ matrix.PYTHON_VERSION }}-debian12"
+      PYTHON_FINAL_DISTROLESS_IMAGE: "ghcr.io/${{ github.repository }}/python-distroless:${{ matrix.PYTHON_MINOR }}-debian12"
+      PYTHON_FINAL_DISTROLESS_IMAGE_FULL: "ghcr.io/${{ github.repository }}/python-distroless:${{ matrix.PYTHON_VERSION }}-debian12"
+      CI_COMMIT_BRANCH: "main"
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set Python Env Vars
+        run: |
+          echo "PYTHON_VERSION=${{ matrix.PYTHON_VERSION }}" >> $GITHUB_ENV
+          echo "PYTHON_MINOR=${{ matrix.PYTHON_MINOR }}" >> $GITHUB_ENV
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v2
+
+      - name: Docker Login
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: GitHub Registry Login
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Builder
+        run: ./scripts/build-builder.sh
+
+      - name: Build Distroless
+        run: ./scripts/build-distroless.sh
+
+      - name: Run Tests
+        run: |
+          ./scripts/tests.sh --target version
+          ./scripts/tests.sh --target version --debug
+          ./scripts/tests.sh --target hello-world
+          ./scripts/tests.sh --target hello-world --debug
+          ./scripts/tests.sh --target gunicorn
+          ./scripts/tests.sh --target fastapi
+          ./scripts/tests.sh --target pandas
+          ./scripts/tests.sh --target google-cloud
+          ./scripts/tests.sh --target kubernetes
+
+      - name: Security Scan
+        run: ./scripts/scan.sh
+
+      - name: Publish Images
+        run: |
+          ./scripts/build-builder.sh --publish
+          ./scripts/build-distroless.sh --publish
